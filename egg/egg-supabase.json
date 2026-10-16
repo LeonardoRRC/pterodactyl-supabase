@@ -1,0 +1,252 @@
+{
+    "_comment": "DO NOT EDIT: FILE GENERATED AUTOMATICALLY BY PTERODACTYL PANEL - PTERODACTYL.IO",
+    "meta": {
+        "version": "PTDL_v2",
+        "update_url": null
+    },
+    "exported_at": "2026-10-16T04:54:30+00:00",
+    "name": "Supabase",
+    "author": "bytessavvy@gmail.com",
+    "description": "Self-hosted Supabase (Postgres, Auth, REST, Realtime, Storage and Studio) in a single container, with an optional Cloudflare Tunnel for HTTPS without open ports. Secrets are generated on first start in secrets.env. Needs at least 2 GB of RAM.",
+    "features": null,
+    "docker_images": {
+        "Supabase": "ghcr.io/leonardorrc/pterodactyl-supabase:latest"
+    },
+    "file_denylist": [],
+    "startup": "/opt/supabase/bin/start",
+    "config": {
+        "files": "{}",
+        "startup": "{\"done\": \"Supabase is ready\"}",
+        "logs": "{}",
+        "stop": "^C"
+    },
+    "scripts": {
+        "installation": {
+            "script": "#!/bin/ash\n# Supabase ships entirely inside the Docker image, nothing is downloaded here.\nmkdir -p /mnt/server/postgres /mnt/server/storage /mnt/server/snippets /mnt/server/functions\necho \"Ready. Start the server to create the database and generate secrets.env.\"\n",
+            "container": "ghcr.io/pterodactyl/installers:alpine",
+            "entrypoint": "ash"
+        }
+    },
+    "variables": [
+        {
+            "name": "Public URL",
+            "description": "Public HTTPS address of Studio and the API, e.g. https://supabase.example.com. Used in auth emails, storage URLs and JWT issuer. Empty = http://localhost:<port>.",
+            "env_variable": "SUPABASE_PUBLIC_URL",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|url|max:255",
+            "field_type": "text"
+        },
+        {
+            "name": "Site URL",
+            "description": "Your application's URL, where auth emails redirect to. Empty = the public URL.",
+            "env_variable": "SITE_URL",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|url|max:255",
+            "field_type": "text"
+        },
+        {
+            "name": "Additional Redirect URLs",
+            "description": "Comma-separated extra URLs allowed as auth redirects.",
+            "env_variable": "ADDITIONAL_REDIRECT_URLS",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|string|max:2048",
+            "field_type": "text"
+        },
+        {
+            "name": "Cloudflare Tunnel Token",
+            "description": "Token of a remotely-managed tunnel. In its Public Hostname use service HTTP and URL localhost:<server port>. Leave empty to run without the tunnel.",
+            "env_variable": "TUNNEL_TOKEN",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|string|max:2048",
+            "field_type": "text"
+        },
+        {
+            "name": "Tunnel Protocol",
+            "description": "auto tries QUIC (UDP 7844) and falls back to HTTP/2. Use http2 if outbound UDP is blocked.",
+            "env_variable": "CF_PROTOCOL",
+            "default_value": "auto",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string|in:auto,quic,http2",
+            "field_type": "text"
+        },
+        {
+            "name": "Dashboard Username",
+            "description": "Username for Studio (HTTP basic auth).",
+            "env_variable": "DASHBOARD_USERNAME",
+            "default_value": "supabase",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string|max:64|regex:/^[A-Za-z0-9_.-]+$/",
+            "field_type": "text"
+        },
+        {
+            "name": "Dashboard Password",
+            "description": "Password for Studio. Empty = use the one generated in secrets.env. Needs at least one letter.",
+            "env_variable": "DASHBOARD_PASSWORD",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|string|min:8|max:128",
+            "field_type": "text"
+        },
+        {
+            "name": "Disable Signups",
+            "description": "Stop new users from signing up to your application.",
+            "env_variable": "DISABLE_SIGNUP",
+            "default_value": "false",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string|in:true,false",
+            "field_type": "text"
+        },
+        {
+            "name": "Enable Email Signups",
+            "description": "Allow email/password signups.",
+            "env_variable": "ENABLE_EMAIL_SIGNUP",
+            "default_value": "true",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string|in:true,false",
+            "field_type": "text"
+        },
+        {
+            "name": "Auto-confirm Emails",
+            "description": "Skip email confirmation. Turn on if you have not configured SMTP.",
+            "env_variable": "ENABLE_EMAIL_AUTOCONFIRM",
+            "default_value": "false",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string|in:true,false",
+            "field_type": "text"
+        },
+        {
+            "name": "Allow Anonymous Users",
+            "description": "Allow anonymous sign-ins.",
+            "env_variable": "ENABLE_ANONYMOUS_USERS",
+            "default_value": "false",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string|in:true,false",
+            "field_type": "text"
+        },
+        {
+            "name": "SMTP Host",
+            "description": "SMTP server for auth emails (confirmations, magic links, resets).",
+            "env_variable": "SMTP_HOST",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|string|max:255",
+            "field_type": "text"
+        },
+        {
+            "name": "SMTP Port",
+            "description": "SMTP port.",
+            "env_variable": "SMTP_PORT",
+            "default_value": "587",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|integer|between:1,65535",
+            "field_type": "text"
+        },
+        {
+            "name": "SMTP User",
+            "description": "SMTP username.",
+            "env_variable": "SMTP_USER",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|string|max:255",
+            "field_type": "text"
+        },
+        {
+            "name": "SMTP Password",
+            "description": "SMTP password.",
+            "env_variable": "SMTP_PASS",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|string|max:255",
+            "field_type": "text"
+        },
+        {
+            "name": "SMTP Sender Email",
+            "description": "From address of auth emails.",
+            "env_variable": "SMTP_ADMIN_EMAIL",
+            "default_value": "admin@example.com",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|email|max:255",
+            "field_type": "text"
+        },
+        {
+            "name": "SMTP Sender Name",
+            "description": "From name of auth emails.",
+            "env_variable": "SMTP_SENDER_NAME",
+            "default_value": "Supabase",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string|max:100",
+            "field_type": "text"
+        },
+        {
+            "name": "Enable Realtime",
+            "description": "Run the Realtime service (about 150 MB of RAM).",
+            "env_variable": "ENABLE_REALTIME",
+            "default_value": "true",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string|in:true,false",
+            "field_type": "text"
+        },
+        {
+            "name": "Enable Storage",
+            "description": "Run the Storage service, files are kept in storage/.",
+            "env_variable": "ENABLE_STORAGE",
+            "default_value": "true",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string|in:true,false",
+            "field_type": "text"
+        },
+        {
+            "name": "Max Upload Size",
+            "description": "Storage upload limit in bytes (default 50 MB).",
+            "env_variable": "FILE_SIZE_LIMIT",
+            "default_value": "52428800",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|integer|min:1",
+            "field_type": "text"
+        },
+        {
+            "name": "JWT Expiry",
+            "description": "Access token lifetime in seconds.",
+            "env_variable": "JWT_EXPIRY",
+            "default_value": "3600",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|integer|between:60,604800",
+            "field_type": "text"
+        },
+        {
+            "name": "Database Port",
+            "description": "Internal Postgres port. To reach the database from outside, add an allocation to the server and put its port here (connections require the password from secrets.env).",
+            "env_variable": "DB_PORT",
+            "default_value": "5432",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|integer|between:1024,65535",
+            "field_type": "text"
+        }
+    ]
+}

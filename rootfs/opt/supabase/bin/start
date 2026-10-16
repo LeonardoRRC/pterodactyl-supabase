@@ -1,0 +1,324 @@
+#!/bin/bash
+# Supabase supervisor: prepares secrets and the database, starts every service
+# with its own clean environment and stops everything when one of them dies.
+set -uo pipefail
+shopt -u patsub_replacement 2>/dev/null || true
+
+ROOT=/home/container
+RUN=/tmp/supabase
+cd "$ROOT" || exit 1
+
+log() { echo "[supabase] $*"; }
+die() { echo "[supabase] ERROR: $*"; exit 1; }
+
+mkdir -p "$RUN/pg" "$RUN/envoy" "$RUN/studio-cache" "$RUN/realtime" \
+    "$ROOT/postgres" "$ROOT/storage" "$ROOT/snippets" "$ROOT/functions" || die "cannot create directories"
+chmod 700 "$RUN/pg"
+
+# ---------------------------------------------------------------- settings ---
+# Egg variables arrive as environment variables. They are copied into plain
+# shell variables here and only passed to the services that need them.
+LISTEN_PORT="${SERVER_PORT:-8000}"
+DB_PORT="${DB_PORT:-5432}"
+PUBLIC_URL="${SUPABASE_PUBLIC_URL:-}"
+PUBLIC_URL="${PUBLIC_URL%/}"
+[ -z "$PUBLIC_URL" ] && PUBLIC_URL="http://localhost:${LISTEN_PORT}"
+SITE_URL="${SITE_URL:-$PUBLIC_URL}"
+ADDITIONAL_REDIRECT_URLS="${ADDITIONAL_REDIRECT_URLS:-}"
+DASHBOARD_USERNAME="${DASHBOARD_USERNAME:-supabase}"
+JWT_EXPIRY="${JWT_EXPIRY:-3600}"
+DISABLE_SIGNUP="${DISABLE_SIGNUP:-false}"
+ENABLE_EMAIL_SIGNUP="${ENABLE_EMAIL_SIGNUP:-true}"
+ENABLE_EMAIL_AUTOCONFIRM="${ENABLE_EMAIL_AUTOCONFIRM:-false}"
+ENABLE_ANONYMOUS_USERS="${ENABLE_ANONYMOUS_USERS:-false}"
+ENABLE_REALTIME="${ENABLE_REALTIME:-true}"
+ENABLE_STORAGE="${ENABLE_STORAGE:-true}"
+FILE_SIZE_LIMIT="${FILE_SIZE_LIMIT:-52428800}"
+PGRST_DB_SCHEMAS="${PGRST_DB_SCHEMAS:-public,graphql_public}"
+STUDIO_DEFAULT_ORGANIZATION="${STUDIO_DEFAULT_ORGANIZATION:-Default Organization}"
+STUDIO_DEFAULT_PROJECT="${STUDIO_DEFAULT_PROJECT:-Default Project}"
+OPENAI_API_KEY="${OPENAI_API_KEY:-}"
+SMTP_ADMIN_EMAIL="${SMTP_ADMIN_EMAIL:-admin@example.com}"
+SMTP_HOST="${SMTP_HOST:-}"
+SMTP_PORT="${SMTP_PORT:-587}"
+SMTP_USER="${SMTP_USER:-}"
+SMTP_PASS="${SMTP_PASS:-}"
+SMTP_SENDER_NAME="${SMTP_SENDER_NAME:-Supabase}"
+TUNNEL_TOKEN_VALUE="${TUNNEL_TOKEN:-}"
+CF_PROTOCOL="${CF_PROTOCOL:-auto}"
+PANEL_DASHBOARD_PASSWORD="${DASHBOARD_PASSWORD:-}"
+API_EXTERNAL_URL="${PUBLIC_URL}/auth/v1"
+
+for p in 3000 3100 3101 4000 5000 5001 8080 9901 9999; do
+    [ "$LISTEN_PORT" = "$p" ] && die "the server port ($p) is used internally by Supabase, assign another port"
+    [ "$DB_PORT" = "$p" ] && die "DB_PORT ($p) is used internally by Supabase"
+done
+[ "$DB_PORT" = "$LISTEN_PORT" ] && die "DB_PORT must be different from the server port"
+
+# ----------------------------------------------------------------- secrets ---
+SECRETS="$ROOT/secrets.env"
+SECRET_KEYS=(POSTGRES_PASSWORD JWT_SECRET ANON_KEY SERVICE_ROLE_KEY DASHBOARD_PASSWORD
+    SECRET_KEY_BASE REALTIME_DB_ENC_KEY VAULT_ENC_KEY PG_META_CRYPTO_KEY
+    S3_PROTOCOL_ACCESS_KEY_ID S3_PROTOCOL_ACCESS_KEY_SECRET RELEASE_COOKIE)
+
+gen_hex() { openssl rand -hex "$1"; }
+gen_b64() { openssl rand -base64 "$1" | tr -d '\n'; }
+b64url() { openssl enc -base64 -A | tr '+/' '-_' | tr -d '='; }
+gen_jwt() { # role
+    local iat exp header payload signed
+    iat=$(date +%s); exp=$((iat + 5 * 3600 * 24 * 365))
+    header=$(printf '%s' '{"alg":"HS256","typ":"JWT"}' | b64url)
+    payload=$(printf '{"role":"%s","iss":"supabase","iat":%s,"exp":%s}' "$1" "$iat" "$exp" | b64url)
+    signed="${header}.${payload}"
+    printf '%s.%s' "$signed" "$(printf '%s' "$signed" | openssl dgst -binary -sha256 -hmac "$JWT_SECRET" | b64url)"
+}
+
+# The file is parsed, never sourced, so editing it cannot run commands.
+declare -A S=()
+if [ -f "$SECRETS" ]; then
+    while IFS= read -r line || [ -n "$line" ]; do
+        [[ "$line" =~ ^([A-Z0-9_]+)=(.*)$ ]] || continue
+        S[${BASH_REMATCH[1]}]="${BASH_REMATCH[2]}"
+    done < "$SECRETS"
+fi
+
+FIRST_SECRETS=false
+[ -f "$SECRETS" ] || FIRST_SECRETS=true
+add_secret() { # name value
+    S[$1]="$2"
+    printf '%s=%s\n' "$1" "$2" >> "$SECRETS"
+}
+umask 077
+[ -f "$SECRETS" ] || printf '%s\n' \
+    "# Generated on first start. Keep this file private and back it up." \
+    "# Deleting a line generates a new value on the next start." \
+    "# ANON_KEY and SERVICE_ROLE_KEY are signed with JWT_SECRET: after changing" \
+    "# JWT_SECRET, delete both lines so they are signed again." > "$SECRETS"
+[ -n "${S[POSTGRES_PASSWORD]:-}" ] || add_secret POSTGRES_PASSWORD "$(gen_hex 16)"
+[ -n "${S[JWT_SECRET]:-}" ] || add_secret JWT_SECRET "$(gen_b64 30)"
+JWT_SECRET="${S[JWT_SECRET]}"
+[ -n "${S[ANON_KEY]:-}" ] || add_secret ANON_KEY "$(gen_jwt anon)"
+[ -n "${S[SERVICE_ROLE_KEY]:-}" ] || add_secret SERVICE_ROLE_KEY "$(gen_jwt service_role)"
+[ -n "${S[DASHBOARD_PASSWORD]:-}" ] || add_secret DASHBOARD_PASSWORD "$(gen_hex 16)"
+[ -n "${S[SECRET_KEY_BASE]:-}" ] || add_secret SECRET_KEY_BASE "$(gen_b64 48)"
+[ -n "${S[REALTIME_DB_ENC_KEY]:-}" ] || add_secret REALTIME_DB_ENC_KEY "$(gen_hex 8)"
+[ -n "${S[VAULT_ENC_KEY]:-}" ] || add_secret VAULT_ENC_KEY "$(gen_hex 16)"
+[ -n "${S[PG_META_CRYPTO_KEY]:-}" ] || add_secret PG_META_CRYPTO_KEY "$(gen_b64 24)"
+[ -n "${S[S3_PROTOCOL_ACCESS_KEY_ID]:-}" ] || add_secret S3_PROTOCOL_ACCESS_KEY_ID "$(gen_hex 16)"
+[ -n "${S[S3_PROTOCOL_ACCESS_KEY_SECRET]:-}" ] || add_secret S3_PROTOCOL_ACCESS_KEY_SECRET "$(gen_hex 32)"
+[ -n "${S[RELEASE_COOKIE]:-}" ] || add_secret RELEASE_COOKIE "$(gen_hex 16)"
+umask 022
+
+POSTGRES_PASSWORD="${S[POSTGRES_PASSWORD]}"
+ANON_KEY="${S[ANON_KEY]}"
+SERVICE_ROLE_KEY="${S[SERVICE_ROLE_KEY]}"
+# The panel variable wins over the generated password
+DASHBOARD_PASSWORD="${PANEL_DASHBOARD_PASSWORD:-${S[DASHBOARD_PASSWORD]}}"
+[[ "$DASHBOARD_PASSWORD" =~ [A-Za-z] ]] || die "the dashboard password needs at least one letter"
+[[ "$POSTGRES_PASSWORD" =~ ^[A-Za-z0-9._~-]+$ ]] || die "POSTGRES_PASSWORD may only contain letters, digits and . _ ~ - (it is used in connection URLs)"
+
+DB_URL_HOST="127.0.0.1:${DB_PORT}/postgres"
+
+# --------------------------------------------------------------- processes ---
+BASE_ENV=(PATH="$PATH" HOME="$ROOT" USER=container LANG=en_US.UTF-8 LANGUAGE=en_US:en
+    LC_ALL=en_US.UTF-8 TZ="${TZ:-UTC}" LOCALE_ARCHIVE="${LOCALE_ARCHIVE:-}" GRN_PLUGINS_DIR="${GRN_PLUGINS_DIR:-}")
+declare -A PIDS=()
+STOPPING=false
+
+spawn() { # name dir command... ; environment comes from the ENV array
+    local name=$1 dir=$2; shift 2
+    (cd "$dir" && exec env -i "${BASE_ENV[@]}" "${ENV[@]}" "$@") > >(sed -u "s/^/[$name] /") 2>&1 &
+    PIDS[$name]=$!
+}
+
+stop_all() {
+    STOPPING=true
+    log "Stopping services..."
+    local name
+    for name in "${!PIDS[@]}"; do
+        [ "$name" = db ] && continue
+        kill -TERM "${PIDS[$name]}" 2>/dev/null
+    done
+    for name in "${!PIDS[@]}"; do
+        [ "$name" = db ] && continue
+        timeout 20 tail --pid="${PIDS[$name]}" -f /dev/null 2>/dev/null
+    done
+    if [ -n "${PIDS[db]:-}" ]; then
+        kill -INT "${PIDS[db]}" 2>/dev/null   # fast shutdown, committed data is safe
+        timeout 60 tail --pid="${PIDS[db]}" -f /dev/null 2>/dev/null
+    fi
+}
+trap 'stop_all; log "Stopped."; exit 0' INT TERM
+
+# ---------------------------------------------------------------- postgres ---
+PGDATA="$ROOT/postgres/data"
+PG_MARKER="$ROOT/postgres/.supabase-initialized"
+PG_ARGS=(-c config_file=/etc/postgresql/postgresql.conf -c "data_directory=$PGDATA"
+    -c "unix_socket_directories=$RUN/pg" -c "port=$DB_PORT" -c log_min_messages=fatal
+    -c dynamic_shared_memory_type=mmap)
+PSQL=(psql -v ON_ERROR_STOP=1 --no-psqlrc -h "$RUN/pg" -p "$DB_PORT" -U supabase_admin -d postgres)
+
+if [ -s "$PGDATA/PG_VERSION" ] && [ ! -f "$PG_MARKER" ]; then
+    die "postgres/data exists but its initialization never finished. If this is a new server, delete the postgres folder and start again."
+fi
+
+if [ ! -s "$PGDATA/PG_VERSION" ]; then
+    log "First start: creating the database, this takes a minute..."
+    mkdir -p "$PGDATA" && chmod 700 "$PGDATA"
+    printf '%s\n' "$POSTGRES_PASSWORD" > "$RUN/pwfile"
+    initdb -D "$PGDATA" -U supabase_admin --pwfile="$RUN/pwfile" --auth-local=trust --auth-host=scram-sha-256 \
+        --allow-group-access --locale-provider=icu --encoding=UTF-8 --icu-locale=en_US.UTF-8 \
+        | sed -u 's/^/[initdb] /' || die "initdb failed"
+    rm -f "$RUN/pwfile"
+    pg_ctl -D "$PGDATA" -w -t 120 -o "$(printf '%s ' "${PG_ARGS[@]}") -c listen_addresses=''" start \
+        | sed -u 's/^/[initdb] /' || die "could not start postgres for initialization"
+    log "Running Supabase database migrations..."
+    if ! env POSTGRES_HOST="$RUN/pg" POSTGRES_PORT="$DB_PORT" POSTGRES_DB=postgres POSTGRES_USER=supabase_admin \
+        POSTGRES_PASSWORD="$POSTGRES_PASSWORD" JWT_EXP="$JWT_EXPIRY" \
+        bash /docker-entrypoint-initdb.d/migrate.sh 2>&1 | sed -u 's/^/[migrate] /'; then
+        pg_ctl -D "$PGDATA" -m fast stop >/dev/null
+        die "database migrations failed, see the output above"
+    fi
+    pg_ctl -D "$PGDATA" -w -m fast stop | sed -u 's/^/[initdb] /'
+    touch "$PG_MARKER"
+    log "Database created."
+fi
+
+ENV=()
+spawn db "$ROOT" postgres "${PG_ARGS[@]}"
+for _ in $(seq 1 120); do
+    pg_isready -q -h "$RUN/pg" -p "$DB_PORT" -U supabase_admin && break
+    kill -0 "${PIDS[db]}" 2>/dev/null || die "postgres exited during startup"
+    sleep 1
+done
+pg_isready -q -h "$RUN/pg" -p "$DB_PORT" || die "postgres did not become ready"
+
+# Keep every service role on the current password, so POSTGRES_PASSWORD can be
+# rotated by editing secrets.env.
+"${PSQL[@]}" -q -v pw="$POSTGRES_PASSWORD" -v jwt_exp="$JWT_EXPIRY" <<'SQL' | sed -u 's/^/[db] /' || die "could not sync role passwords"
+ALTER ROLE supabase_admin WITH PASSWORD :'pw';
+ALTER ROLE postgres WITH PASSWORD :'pw';
+ALTER ROLE authenticator WITH PASSWORD :'pw';
+ALTER ROLE pgbouncer WITH PASSWORD :'pw';
+ALTER ROLE supabase_auth_admin WITH PASSWORD :'pw';
+ALTER ROLE supabase_functions_admin WITH PASSWORD :'pw';
+ALTER ROLE supabase_storage_admin WITH PASSWORD :'pw';
+ALTER DATABASE postgres SET "app.settings.jwt_exp" TO :'jwt_exp';
+SQL
+
+# ---------------------------------------------------------------- services ---
+ENV=(GOTRUE_API_HOST=127.0.0.1 GOTRUE_API_PORT=9999 PORT=9999 API_EXTERNAL_URL="$API_EXTERNAL_URL"
+    GOTRUE_DB_DRIVER=postgres GOTRUE_DB_DATABASE_URL="postgres://supabase_auth_admin:${POSTGRES_PASSWORD}@${DB_URL_HOST}"
+    GOTRUE_DB_MIGRATIONS_PATH=/usr/local/etc/auth/migrations
+    GOTRUE_SITE_URL="$SITE_URL" GOTRUE_URI_ALLOW_LIST="$ADDITIONAL_REDIRECT_URLS" GOTRUE_DISABLE_SIGNUP="$DISABLE_SIGNUP"
+    GOTRUE_JWT_ADMIN_ROLES=service_role GOTRUE_JWT_AUD=authenticated GOTRUE_JWT_DEFAULT_GROUP_NAME=authenticated
+    GOTRUE_JWT_EXP="$JWT_EXPIRY" GOTRUE_JWT_SECRET="$JWT_SECRET" GOTRUE_JWT_ISSUER="$API_EXTERNAL_URL"
+    GOTRUE_EXTERNAL_EMAIL_ENABLED="$ENABLE_EMAIL_SIGNUP" GOTRUE_EXTERNAL_ANONYMOUS_USERS_ENABLED="$ENABLE_ANONYMOUS_USERS"
+    GOTRUE_MAILER_AUTOCONFIRM="$ENABLE_EMAIL_AUTOCONFIRM"
+    GOTRUE_SMTP_ADMIN_EMAIL="$SMTP_ADMIN_EMAIL" GOTRUE_SMTP_HOST="$SMTP_HOST" GOTRUE_SMTP_PORT="$SMTP_PORT"
+    GOTRUE_SMTP_USER="$SMTP_USER" GOTRUE_SMTP_PASS="$SMTP_PASS" GOTRUE_SMTP_SENDER_NAME="$SMTP_SENDER_NAME"
+    GOTRUE_MAILER_URLPATHS_INVITE=/auth/v1/verify GOTRUE_MAILER_URLPATHS_CONFIRMATION=/auth/v1/verify
+    GOTRUE_MAILER_URLPATHS_RECOVERY=/auth/v1/verify GOTRUE_MAILER_URLPATHS_EMAIL_CHANGE=/auth/v1/verify
+    GOTRUE_EXTERNAL_PHONE_ENABLED=false GOTRUE_SMS_AUTOCONFIRM=false)
+spawn auth "$ROOT" auth
+
+ENV=(PGRST_DB_URI="postgres://authenticator:${POSTGRES_PASSWORD}@${DB_URL_HOST}" PGRST_DB_SCHEMAS="$PGRST_DB_SCHEMAS"
+    PGRST_DB_MAX_ROWS=1000 PGRST_DB_EXTRA_SEARCH_PATH=public PGRST_DB_ANON_ROLE=anon
+    PGRST_SERVER_HOST=127.0.0.1 PGRST_SERVER_PORT=3100 PGRST_ADMIN_SERVER_HOST=127.0.0.1 PGRST_ADMIN_SERVER_PORT=3101
+    PGRST_JWT_SECRET="$JWT_SECRET" PGRST_DB_USE_LEGACY_GUCS=false PGRST_APP_SETTINGS_JWT_EXP="$JWT_EXPIRY")
+spawn rest "$ROOT" postgrest
+
+ENV=(PG_META_HOST=127.0.0.1 PG_META_PORT=8080 PG_META_DB_HOST=127.0.0.1 PG_META_DB_PORT="$DB_PORT"
+    PG_META_DB_NAME=postgres PG_META_DB_USER=postgres PG_META_DB_PASSWORD="$POSTGRES_PASSWORD"
+    CRYPTO_KEY="${S[PG_META_CRYPTO_KEY]}" NODE_ENV=production)
+spawn meta /opt/meta node dist/server/server.js
+
+if [ "$ENABLE_REALTIME" = true ]; then
+    ENV=(PORT=4000 DB_HOST=127.0.0.1 DB_PORT="$DB_PORT" DB_USER=supabase_admin DB_PASSWORD="$POSTGRES_PASSWORD"
+        DB_NAME=postgres DB_AFTER_CONNECT_QUERY='SET search_path TO _realtime' DB_ENC_KEY="${S[REALTIME_DB_ENC_KEY]}"
+        API_JWT_SECRET="$JWT_SECRET" SECRET_KEY_BASE="${S[SECRET_KEY_BASE]}" METRICS_JWT_SECRET="$JWT_SECRET"
+        ERL_AFLAGS="-proto_dist inet_tcp" DNS_NODES="''" APP_NAME=realtime SEED_SELF_HOST=true RUN_JANITOR=true
+        DISABLE_HEALTHCHECK_LOGGING=true MIX_ENV=prod ECTO_IPV6=false
+        RELEASE_TMP="$RUN/realtime" RELEASE_COOKIE="${S[RELEASE_COOKIE]}" ERL_CRASH_DUMP="$RUN/realtime/erl_crash.dump")
+    spawn realtime /opt/realtime bash -c \
+        '/opt/realtime/bin/migrate && /opt/realtime/bin/realtime eval "Realtime.Release.seeds(Realtime.Repo)" && exec /opt/realtime/bin/server'
+fi
+
+if [ "$ENABLE_STORAGE" = true ]; then
+    ENV=(SERVER_HOST=127.0.0.1 SERVER_PORT=5000 SERVER_ADMIN_PORT=5001 NODE_ENV=production
+        ANON_KEY="$ANON_KEY" SERVICE_KEY="$SERVICE_ROLE_KEY" POSTGREST_URL=http://127.0.0.1:3100
+        AUTH_JWT_SECRET="$JWT_SECRET" DATABASE_URL="postgres://supabase_storage_admin:${POSTGRES_PASSWORD}@${DB_URL_HOST}"
+        STORAGE_PUBLIC_URL="$PUBLIC_URL" REQUEST_ALLOW_X_FORWARDED_PATH=true FILE_SIZE_LIMIT="$FILE_SIZE_LIMIT"
+        STORAGE_BACKEND=file GLOBAL_S3_BUCKET=stub FILE_STORAGE_BACKEND_PATH="$ROOT/storage" TENANT_ID=stub REGION=stub
+        ENABLE_IMAGE_TRANSFORMATION=false
+        S3_PROTOCOL_ACCESS_KEY_ID="${S[S3_PROTOCOL_ACCESS_KEY_ID]}" S3_PROTOCOL_ACCESS_KEY_SECRET="${S[S3_PROTOCOL_ACCESS_KEY_SECRET]}")
+    spawn storage /opt/storage node dist/start/server.js
+fi
+
+ENV=(HOSTNAME=127.0.0.1 PORT=3000 NODE_ENV=production NEXT_TELEMETRY_DISABLED=1
+    STUDIO_PG_META_URL=http://127.0.0.1:8080 POSTGRES_HOST=127.0.0.1 POSTGRES_PORT="$DB_PORT" POSTGRES_DB=postgres
+    POSTGRES_PASSWORD="$POSTGRES_PASSWORD" POSTGRES_USER_READ_WRITE=postgres PG_META_CRYPTO_KEY="${S[PG_META_CRYPTO_KEY]}"
+    PGRST_DB_SCHEMAS="$PGRST_DB_SCHEMAS" PGRST_DB_MAX_ROWS=1000 PGRST_DB_EXTRA_SEARCH_PATH=public
+    DEFAULT_ORGANIZATION_NAME="$STUDIO_DEFAULT_ORGANIZATION" DEFAULT_PROJECT_NAME="$STUDIO_DEFAULT_PROJECT"
+    OPENAI_API_KEY="$OPENAI_API_KEY" SUPABASE_URL="http://127.0.0.1:${LISTEN_PORT}" SUPABASE_PUBLIC_URL="$PUBLIC_URL"
+    SUPABASE_ANON_KEY="$ANON_KEY" SUPABASE_SERVICE_KEY="$SERVICE_ROLE_KEY" AUTH_JWT_SECRET="$JWT_SECRET"
+    SUPABASE_PUBLISHABLE_KEY= SUPABASE_SECRET_KEY= ENABLED_FEATURES_LOGS_ALL=false
+    SNIPPETS_MANAGEMENT_FOLDER="$ROOT/snippets" EDGE_FUNCTIONS_MANAGEMENT_FOLDER="$ROOT/functions")
+spawn studio /opt/studio node apps/studio/server.js
+
+# Envoy: render the official listener template. Plain string replacement, so
+# special characters in the values cannot break the substitution.
+DASHBOARD_HASH=$(printf '%s' "$DASHBOARD_PASSWORD" | openssl sha1 -binary | openssl base64)
+BASIC_AUTH="${DASHBOARD_USERNAME}:{SHA}${DASHBOARD_HASH}"
+LDS=$(< /opt/supabase/envoy/lds.template.yaml)
+LDS=${LDS//'${LISTEN_PORT}'/$LISTEN_PORT}
+LDS=${LDS//'${ANON_KEY}'/$ANON_KEY}
+LDS=${LDS//'${SERVICE_ROLE_KEY}'/$SERVICE_ROLE_KEY}
+LDS=${LDS//'${ANON_KEY_ASYMMETRIC}'/}
+LDS=${LDS//'${SERVICE_ROLE_KEY_ASYMMETRIC}'/}
+LDS=${LDS//'${SUPABASE_PUBLISHABLE_KEY}'/}
+LDS=${LDS//'${SUPABASE_SECRET_KEY}'/}
+LDS=${LDS//'${SUPABASE_PUBLIC_URL}'/$PUBLIC_URL}
+LDS=${LDS//'${DASHBOARD_BASIC_AUTH}'/$BASIC_AUTH}
+printf '%s\n' "$LDS" > "$RUN/envoy/lds.yaml"
+ENV=()
+spawn gateway "$ROOT" envoy -c /opt/supabase/envoy/envoy.yaml --disable-hot-restart --concurrency 2 \
+    --log-level warn
+
+if [ -n "$TUNNEL_TOKEN_VALUE" ]; then
+    ENV=(TUNNEL_TOKEN="$TUNNEL_TOKEN_VALUE")
+    spawn cloudflared "$ROOT" cloudflared tunnel --no-autoupdate --protocol "$CF_PROTOCOL" --loglevel info run
+fi
+
+# ------------------------------------------------------------------- ready ---
+(
+    for _ in $(seq 1 180); do
+        if curl -fs -o /dev/null http://127.0.0.1:3000/api/platform/profile \
+            && curl -s -o /dev/null http://127.0.0.1:"$LISTEN_PORT"/ ; then
+            log "Supabase is ready"
+            log "  Studio and API: ${PUBLIC_URL}  (user: ${DASHBOARD_USERNAME}, password: see secrets.env or the panel variable)"
+            log "  anon key:       ${ANON_KEY}"
+            log "  service_role key, JWT secret and database password are in secrets.env"
+            $FIRST_SECRETS && log "  secrets.env was just generated, download a copy and keep it safe"
+            [ -z "$TUNNEL_TOKEN_VALUE" ] && log "  No tunnel token set: Supabase is only reachable on port ${LISTEN_PORT} over plain HTTP"
+            [ -n "$TUNNEL_TOKEN_VALUE" ] && log "  Tunnel: point the public hostname to http://localhost:${LISTEN_PORT}"
+            exit 0
+        fi
+        sleep 2
+    done
+    log "Studio is taking unusually long to start, check the output above"
+) &
+
+# --------------------------------------------------------------- supervise ---
+while true; do
+    wait -n "${PIDS[@]}"
+    $STOPPING && exit 0
+    for name in "${!PIDS[@]}"; do
+        if ! kill -0 "${PIDS[$name]}" 2>/dev/null; then
+            log "Service '$name' exited unexpectedly, stopping everything"
+            unset "PIDS[$name]"
+            stop_all
+            exit 1
+        fi
+    done
+done

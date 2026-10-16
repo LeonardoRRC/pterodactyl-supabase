@@ -1,0 +1,12 @@
+#!/bin/bash
+# Same contract as the Pterodactyl yolks: run the egg's startup command.
+cd /home/container || exit 1
+
+INTERNAL_IP=$(ip route get 1 2>/dev/null | awk '{print $(NF-2);exit}')
+export INTERNAL_IP
+
+STARTUP="${STARTUP:-/opt/supabase/bin/start}"
+MODIFIED_STARTUP=$(echo -e "${STARTUP}" | sed -e 's/{{/${/g' -e 's/}}/}/g')
+echo ":/home/container$ ${MODIFIED_STARTUP}"
+
+eval "${MODIFIED_STARTUP}"

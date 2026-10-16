@@ -2,11 +2,7 @@ resources:
   - '@type': type.googleapis.com/envoy.config.cluster.v3.Cluster
     name: auth
     connect_timeout: 5s
-    type: STRICT_DNS
-    dns_refresh_rate: 5s
-    dns_failure_refresh_rate:
-      base_interval: 1s
-      max_interval: 1s
+    type: STATIC
     lb_policy: ROUND_ROBIN
     load_assignment:
       cluster_name: auth
@@ -34,11 +30,7 @@ resources:
   - '@type': type.googleapis.com/envoy.config.cluster.v3.Cluster
     name: rest
     connect_timeout: 5s
-    type: STRICT_DNS
-    dns_refresh_rate: 5s
-    dns_failure_refresh_rate:
-      base_interval: 1s
-      max_interval: 1s
+    type: STATIC
     lb_policy: ROUND_ROBIN
     load_assignment:
       cluster_name: rest
@@ -66,11 +58,7 @@ resources:
   - '@type': type.googleapis.com/envoy.config.cluster.v3.Cluster
     name: realtime
     connect_timeout: 5s
-    type: STRICT_DNS
-    dns_refresh_rate: 5s
-    dns_failure_refresh_rate:
-      base_interval: 1s
-      max_interval: 1s
+    type: STATIC
     lb_policy: ROUND_ROBIN
     load_assignment:
       cluster_name: realtime
@@ -98,11 +86,7 @@ resources:
   - '@type': type.googleapis.com/envoy.config.cluster.v3.Cluster
     name: storage
     connect_timeout: 5s
-    type: STRICT_DNS
-    dns_refresh_rate: 5s
-    dns_failure_refresh_rate:
-      base_interval: 1s
-      max_interval: 1s
+    type: STATIC
     lb_policy: ROUND_ROBIN
     load_assignment:
       cluster_name: storage
@@ -130,11 +114,7 @@ resources:
   - '@type': type.googleapis.com/envoy.config.cluster.v3.Cluster
     name: functions
     connect_timeout: 5s
-    type: STRICT_DNS
-    dns_refresh_rate: 5s
-    dns_failure_refresh_rate:
-      base_interval: 1s
-      max_interval: 1s
+    type: STATIC
     lb_policy: ROUND_ROBIN
     load_assignment:
       cluster_name: functions
@@ -161,11 +141,7 @@ resources:
   - '@type': type.googleapis.com/envoy.config.cluster.v3.Cluster
     name: meta
     connect_timeout: 5s
-    type: STRICT_DNS
-    dns_refresh_rate: 5s
-    dns_failure_refresh_rate:
-      base_interval: 1s
-      max_interval: 1s
+    type: STATIC
     lb_policy: ROUND_ROBIN
     load_assignment:
       cluster_name: meta
@@ -193,11 +169,7 @@ resources:
   - '@type': type.googleapis.com/envoy.config.cluster.v3.Cluster
     name: studio
     connect_timeout: 5s
-    type: STRICT_DNS
-    dns_refresh_rate: 5s
-    dns_failure_refresh_rate:
-      base_interval: 1s
-      max_interval: 1s
+    type: STATIC
     lb_policy: ROUND_ROBIN
     load_assignment:
       cluster_name: studio

@@ -75,6 +75,8 @@ COPY --from=storage /app/migrations /opt/storage/migrations
 COPY --from=storage /app/package.json /app/watt.json /app/watt.storage.json /opt/storage/
 COPY --from=storage-deps /app/node_modules /opt/storage/node_modules
 COPY --from=meta /usr/src/app /opt/meta
+# meta and Studio ship native modules built for Node 22; storage needs Node 24
+COPY --from=meta /usr/local/bin/node /opt/node22/bin/node
 COPY --from=studio /app /opt/studio
 # Next.js writes its cache next to the app; point it to the tmpfs
 RUN rm -rf /opt/studio/apps/studio/.next/cache && ln -s /tmp/supabase/studio-cache /opt/studio/apps/studio/.next/cache
@@ -102,6 +104,7 @@ RUN ! (ldd /usr/local/bin/postgrest /usr/local/bin/auth /usr/local/bin/envoy 2>&
     && cloudflared --version \
     && /opt/realtime/bin/realtime version \
     && node -e "require('/opt/storage/node_modules/pg')" \
+    && /opt/node22/bin/node --version \
     && test -f /opt/studio/apps/studio/server.js \
     && test -f /opt/meta/dist/server/server.js
 

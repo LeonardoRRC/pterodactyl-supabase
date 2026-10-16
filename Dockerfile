@@ -37,6 +37,7 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         ca-certificates curl openssl tini tzdata locales iproute2 \
         libstdc++6 libncurses6 xz-utils procps \
+        libpq5 libgmp10 libffi8 \
     && sed -i '/en_US.UTF-8/s/^# //g' /etc/locale.gen && locale-gen \
     && rm -rf /var/lib/apt/lists/* \
     # Pterodactyl runs containers as uid 988 with /home/container as the only writable path
@@ -91,8 +92,10 @@ RUN cp /opt/supabase/db/init-scripts/*.sql /docker-entrypoint-initdb.d/init-scri
     && cp /opt/supabase/postgres/pgsodium_getkey.sh /usr/lib/postgresql/bin/pgsodium_getkey.sh \
     && chmod +x /opt/supabase/bin/* /usr/lib/postgresql/bin/pgsodium_getkey.sh /docker-entrypoint-initdb.d/migrate.sh
 
-# Sanity checks: every binary must run on this base
-RUN /usr/lib/postgresql/bin/postgres --version \
+# Sanity checks: every binary must run on this base (the arm64 PostgREST build
+# is dynamically linked against libpq, hence libpq5 above)
+RUN ! (ldd /usr/local/bin/postgrest /usr/local/bin/auth /usr/local/bin/envoy 2>&1 | grep 'not found') \
+    && /usr/lib/postgresql/bin/postgres --version \
     && auth version \
     && postgrest --version \
     && envoy --version \

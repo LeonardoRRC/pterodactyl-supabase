@@ -31,7 +31,7 @@ RUN npm ci --omit=dev --ignore-scripts=false && npm cache clean --force
 FROM node:24-trixie-slim
 
 ARG TARGETARCH
-ARG CLOUDFLARED_VERSION=2026.10.1
+ARG CLOUDFLARED_VERSION=2026.10.7
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \

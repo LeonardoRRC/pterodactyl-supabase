@@ -2,6 +2,11 @@
 # Same contract as the Pterodactyl yolks: run the egg's startup command.
 cd /home/container || exit 1
 
+# /etc/passwd is a symlink to /tmp/passwd (see the Dockerfile): give the
+# "container" user the uid and gid Wings started us with.
+awk -F: -v OFS=: -v uid="$(id -u)" -v gid="$(id -g)" \
+    '$1 == "container" { $3 = uid; $4 = gid } { print }' /etc/passwd.base > /tmp/passwd
+
 INTERNAL_IP=$(ip route get 1 2>/dev/null | awk '{print $(NF-2);exit}')
 export INTERNAL_IP
 

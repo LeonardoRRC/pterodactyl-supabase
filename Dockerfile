@@ -108,6 +108,12 @@ RUN ! (ldd /usr/local/bin/postgrest /usr/local/bin/auth /usr/local/bin/envoy 2>&
     && test -f /opt/studio/apps/studio/server.js \
     && test -f /opt/meta/dist/server/server.js
 
+# Wings runs the container with the node's uid (988 by default, but often 999)
+# and initdb refuses to run as a uid missing from /etc/passwd. The root
+# filesystem is read-only, so /etc/passwd points to the tmpfs and the
+# entrypoint writes it with the real uid. Keep this as the last RUN.
+RUN cp /etc/passwd /etc/passwd.base && ln -sf /tmp/passwd /etc/passwd
+
 ENV PATH="/nix/var/nix/profiles/default/bin:/usr/lib/postgresql/bin:${PATH}" \
     LANG=en_US.UTF-8 \
     LANGUAGE=en_US:en \
@@ -117,7 +123,8 @@ ENV PATH="/nix/var/nix/profiles/default/bin:/usr/lib/postgresql/bin:${PATH}" \
     USER=container \
     HOME=/home/container
 
-USER container
+# Numeric: /etc/passwd only exists once the entrypoint has written it
+USER 988:988
 WORKDIR /home/container
 
 ENTRYPOINT ["/usr/bin/tini", "-g", "--"]
